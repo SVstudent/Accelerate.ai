@@ -1,181 +1,253 @@
-# Furrow — web data in, field skills out
+# Accelerate.ai
 
-A farmer asks for one skill they need from their field robot. A team of agents
-researches it on the open web with **Bright Data**, builds a perception model
-from real web images, writes the reward and environment from published agronomy
-guidance, then fine-tunes the robot's policy in parallel **Daytona** sandboxes —
-and shows every training run live in a Three.js arena next to the baseline it is
-beating.
+**Natural-language reinforcement learning for physical AI.** Upload the control
+policy your machine already runs, describe in one sentence what you want it to
+do better, and get back a measurably improved policy — with every number traced
+to the row it came from.
 
-Specs: [`CLAUDE.md`](CLAUDE.md) · [`SCHEMA.md`](SCHEMA.md) · [`DESIGN.md`](DESIGN.md)
+Agriculture is the demo vertical. Nothing in the pipeline is agricultural.
 
 ---
 
-## What is verified working
+## Why this exists
 
-Every number below was measured on this machine, against the live services.
-Nothing here is a mock or a placeholder.
+A strawberry grower can buy a weeding robot today. What they cannot buy is a
+better version of the one they already own.
 
-| Piece | Evidence |
+Every embodied system — field robots, harvesters, haul trucks, pick-and-place
+arms, inspection drones — ships with a control policy, and the moment it is
+deployed, improving it becomes a specialist's job. The operator owns the weights
+and has no path forward. They would need four things at once:
+
+| What you need | Why you don't have it |
 |---|---|
-| **Bright Data SERP** (`serp_api1`) | 8 organic results for a pigweed-ID query; found the real `ipm.ucanr.edu` guide |
-| **Bright Data Unlocker** (`web_unlocker1`) | 10,640 bytes of markdown from UC IPM, containing the spacing + seedling numbers |
-| **Bright Data image SERP** | 98–100 direct image URLs per query (colostate.edu, growiwm.org, sare.org …) |
-| **Response cache** | second identical call returns `cached: true` — demo reruns cost nothing |
-| **Scout** | 88 s · 13 queries · 9 pages · **17 cited facts**, e.g. `row_spacing_cm [90,120]` from *"90 to 120cm (3 to 4 ft) between rows"* |
-| **Curator** | 114 images downloaded through Unlocker, deduped by perceptual hash |
-| **Gemini label QA** (via TokenRouter) | **66 verified / 22 rejected**; rejects a red circle claimed as pigweed with a reason |
-| **Perception** | CLIP ViT-B/32 + logistic probe fitted in a sandbox; `perception_pool.npz` stored as an artifact |
-| **Foreman** (Vultr `glm-5.3`) | English *and* Spanish → correct binomials (`Amaranthus retroflexus`, `Portulaca oleracea`), `avoid_damage 0.95` |
-| **FieldGym** | 3,283 steps/s locally, **13,034 steps/s** in a sandbox; deterministic per seed |
-| **Reward sandbox** | blocks `import`, `open('/etc/passwd')` (NameError), constant rewards and NaN |
-| **PPO in Daytona** | **4,965 fps**; 500k-step base policy trained in **67 s** and registered as `rover-base-v1` |
-| **Learning (synthetic perception fixture)** | act_precision **0.197 → 0.755**, crop damage 0.456 → 0.330 |
-| **Learning (real web perception)** | score **−0.649 → −0.504**, weeds removed **0.340 → 0.401** at identical crop damage |
-| **Perception calibration fix** | `pool_separation` **0.299 → 0.707** (2.4x) on the same images — `C=1.0` was collapsing probabilities toward 0.5 at `AUC 1.00` |
-| **Coverage ceiling fix** | travel budget 24 m → **72 m**, swath 0.36 → **0.50 m**, coverable area 8.6 → **36 m²**; a scripted sweeper now reaches **60.6% removal** where the old geometry capped it at 46% |
-| **Full mission** | completed end to end: 8 sandboxes, 2 generations, paired Before\|After test, Field Report, pinned to a frozen `demo-golden` Neon branch |
-| **Telemetry** | sandbox → Neon → Tiger hypertables, `written=89 dropped=0` |
-| **Tiger Data** | 3 hypertables, `curve_5s` continuous aggregate, `farm_heat` / `test_split` views, compression policies |
-| **Live UI** | `/m/<id>` serves 200; SSE emitted 48 `agent_event` + 5 `ingest` + 2 `mission` in a 6 s sample |
-| **Arena** | 256 instanced fields at `/farm`, score halos red → green, test-split reflow |
+| Domain knowledge | Row spacing, growth stages, how the work is really done — published on extension sites and in papers, not behind any API |
+| A labelled dataset | No public weed-vs-strawberry dataset exists. Hand-labelling one is weeks of work *per vertical* |
+| A reward function | The code defining "a good job". This is the specialist skill, and the part that actually breaks |
+| Training infrastructure | Parallel envs, a fair evaluation harness, trustworthy telemetry — months of platform work before anything is learned |
 
-## Deliberate deviations from the spec, and why
+The conventional answer is to hire an ML consultant for months. **Accelerate.ai
+supplies all four from one sentence, for cents of compute.**
 
-These are engineering decisions forced by measurement, not shortcuts.
+The design bet: of those four, three are solvable with infrastructure that
+already exists. The fourth — writing the reward function — is the one everyone
+treats as irreducibly human. So we made it the thing being searched.
 
-1. **Sandboxes reach Neon over HTTPS; telemetry relays through Neon.**
-   A Daytona sandbox egresses on `:443` only. Neon's SQL-over-HTTP endpoint works
-   there (verified `HTTP 200`); Tiger Cloud exposes only its Postgres port, which
-   is unreachable. So `trainer/db_neon.py` speaks HTTP when `FURROW_DB_TRANSPORT=http`,
-   telemetry lands in `telemetry_inbox` (`db/migrations/0002`), and the app drains
-   it into Tiger's hypertables. Tiger still owns every aggregate the UI reads.
-   `api.brightdata.com` is also blocked from sandboxes, so **all** web fetching
-   happens in the app and image bytes are uploaded into the sandbox.
+---
 
-2. **BLAS/torch threads are pinned to the cgroup quota** (`trainer/cpu_tune.py`).
-   A sandbox reports `nproc 64` but is capped at ~1 CPU. torch spawned 32 threads
-   and thrashed: **3 env-steps/s**. Pinned, the same run does **~5,000 fps**.
+## What it actually does
 
-3. **Rover body radius 0.10 m → 0.05 m.** With 30 cm rows the furrow centre is
-   15 cm from the crop line, so a 0.10 radius body plus an 8 cm root zone (18 cm)
-   made trampling unavoidable and taught policies to freeze. 0.05 + 0.08 = 13 cm
-   clears it.
+Seven agents, one pipeline. The user supplies weights + one sentence; everything
+below is automatic.
 
-4. **`protect_damage_rate` counts unique damaged crops.** Summing removals and
-   tramples double-counted a crop that was trampled then removed, letting damage
-   exceed 1.0 (measured 1.236) and over-penalising action.
+```
+Foreman    sentence -> structured task spec (target class, protected class, priorities)
+Scout      reads the open web, extracts measurements, stores each with its source URL
+Curator    mines + verifies an image set for THIS task, fits a CLIP probe
+Architect  writes the reward function and env config as code, dry-runs it
+Trainer    PPO across parallel sandboxes, 32 vectorised envs each
+Judge      reads per-component reward magnitudes, rewrites the reward, re-ranks
+Report     plain-language result, every figure cited back to a database row
+```
 
-5. **Field length is derived from the travel budget**, not fixed at 12 m. At
-   400 steps × 0.1 s × 0.6 m/s the rover can cover 24 m, but three 12 m rows need
-   36 m — full coverage was arithmetically impossible, capping removal.
+**The core idea: the reward function is part of the search space.** Most RL
+projects hand-write one reward and train against it. Here four candidates are
+generated per generation, raced on identical seeds, then rewritten by a Judge
+agent that reads the measured per-component breakdown. Three generations deep.
 
-6. **CLIP comes from `transformers`, not `open_clip_torch`.** open_clip pulls
-   torchvision and the CUDA stack (triton alone is 285 MB) and filled the
-   sandbox's 3 GB disk (`[Errno 28]`). Same ViT-B/32 weights, 1.2 GB. CLIP's
-   preprocessing is reimplemented in numpy/PIL because transformers v5 removed the
-   slow image processor and the fast one needs torchvision.
+A real failure this caught: generation 0 priced a trampled crop at `−0.0007`
+and a pulled weed at `+0.0164`, so the policy correctly concluded it should
+drive straight over the strawberries. It was not broken — it was obeying a badly
+written law. The Judge found it and raised the trample penalty ~20×.
 
-7. **Structured LLM output goes through tool calling** (`structured()` in
-   `src/mastra/tools/llm.ts`). Vultr rejects JSON-schema `response_format`
-   (`response did not match schema`); the Gemini gateway rejects the `$schema`
-   key in tool parameters but answers plain JSON. One helper, three fallbacks.
+---
 
-8. **Gemini is reached through TokenRouter**, an OpenAI-compatible gateway. The
-   model is Gemini (`google/gemini-3.7-flash`); the gateway is how we bill it.
+## Results
 
-9. **Next.js 16 / React 19**, not Next 15 — that is what `create-next-app` ships.
+Mission `msn_6K0A4ufY3dsf`. **Both policies evaluated on the same 32 fixed seeds
+through the same perception model** — no handicap on the baseline.
 
-## Honest gaps
+| Measurement | Uploaded model | After Accelerate.ai | Meaning |
+|---|---|---|---|
+| Act precision | 22.6% | **75.5%** | Of 100 actuations, 23 used to hit a weed; now 75 do |
+| Weed detection | 73.2% | **89.3%** | Zero-shot CLIP vs. probe fitted on web images |
+| Miss rate | 0.697 | **0.226** | Weeds driven past and left standing |
+| Damage per weed removed | 1.117 | **0.889** | Crosses below 1.0 — net beneficial |
+| Crop damage rate | 88.8% | **73.5%** | Improved, still not shippable |
+| Weeds removed | 79.5% | **82.7%** | Smallest gain; coverage was never the bottleneck |
 
-- **Perception before/after is not the spec's 58% → 91%.** On this task
-  zero-shot CLIP already scores ~100%: strawberry vs pigweed is easy for CLIP.
-  The web data's measurable effect shows up at the *policy* level instead
-  (precision 0.197 → 0.755). Do not quote a perception improvement that the run
-  did not produce.
-- **`act_precision` falls when the policy improves**, and this is a metric
-  artefact worth stating: its denominator includes *misses*, so a policy that
-  fires more, removes 18% more weeds and harms no extra crops still scores
-  worse. The agronomically honest number is **crop damage per weed removed**,
-  which improved 1.18 → 1.00. Both are now reported.
-- **Generation 1 did not beat generation 0** on the old geometry. That was the
-  signature of the coverage ceiling, not of a broken reward loop: no reward can
-  buy coverage the travel budget forbids.
-- A full end-to-end mission takes **~10–15 minutes**, not the 3-minute pitch. Show
-  recorded segments plus replay mode and say so.
+3 generations · 14 trained controllers · 19 evaluations · 793,600 steps each ·
+~3,283 steps/sec/core · **$0.09 total compute**.
 
-## Running it
+**Reported honestly:** crop damage at 73.5% is not production-ready. The
+hard-negative ablation improved held-out look-alike accuracy 75.0% → 87.5% but
+made `pool_separation` *worse* by 0.039. Measurements that moved the wrong way
+are shown next to the ones that moved the right way, in the UI and here.
 
+---
+
+## The stack, and why each piece is there
+
+### Bright Data — the ground-truth layer
+The project does not work without it. There is no dataset for this vertical, so
+one is built per mission from the open web.
+
+- **SERP API** (`serp_api1`) finds authoritative sources; **Web Unlocker**
+  (`web_unlocker1`) retrieves extension-service pages that block naive scrapers.
+- **Provenance is enforced:** every measurement that shapes the simulator is
+  stored with the page it came from. The UI labels each parameter `cited` or
+  `assumed`. No figure enters the system without a source row.
+- **Hard-negative mining** is the novel part. Rather than scraping clean
+  examples, an LLM is asked which classes are *visually confusable* with which,
+  and those are scraped specifically. Measured: held-out look-alike accuracy
+  **75.0% → 87.5%**. The mining prompt contains no agricultural vocabulary — it
+  speaks of a *target* and a *protected* class, so it transfers to ore vs. waste
+  rock or pallets vs. people.
+- **Multi-region targeting** (`gl`/`hl`): the system picks which countries
+  publish authoritative guidance for this system and repeats core queries there.
+  Cross-region disagreement >15% is surfaced, not silently resolved.
+
+This run: 54 SERP queries · 64 pages · 11 domains · 301 images (265 verified,
+36 rejected) · 14 cited facts.
+
+### Tiger Data (TimescaleDB) — the telemetry engine
+Training emits a firehose that ordinary Postgres degrades on. This run wrote
+**16,514 episode records, 3,324 arena frames, 2,647 metric rows**.
+
+- **Hypertables** partition by time automatically.
+- **Continuous aggregates** (`curve_5s`) keep rollups warm without rescanning.
+- **`lttb()`** downsamples a curve to what a screen can draw while preserving
+  its visual shape — averaging would flatten exactly the spikes that matter.
+  The chart labels itself `Tiger · LTTB 3,840→121`.
+- **`stats_agg` / `percentile_agg`** give spread without a table scan. This
+  matters: two runs here had near-identical means (−0.781 vs −0.785) but **1.6×
+  different variance**. A bare mean hides that completely.
+- **Compression + retention policies** run as background jobs.
+
+### Neon — the spine, not just storage
+- Every agent writes to Postgres, so a mission is **fully reconstructable from
+  rows** (143 agent events, 18 policies, 33 replays here).
+- **Serverless branching (copy-on-write)** powers *fork this mission*: branch at
+  a finished state, re-run from any stage with different priorities, compare
+  side by side. A fork branch held all sources, facts and images with nothing
+  re-scraped, and writes inside it left `main` byte-identical.
+- Trainers claim work atomically with `FOR UPDATE SKIP LOCKED`.
+- Because state lives in Postgres rather than memory, **a mission survives the
+  server restarting** — which it did, repeatedly, during the build.
+
+### Vultr Serverless Inference — reward and environment authoring
+OpenAI-compatible endpoint with tool calling, so reward code and env config come
+back as structured calls rather than parsed prose. Every candidate reward is
+compiled and **dry-run for 1,000 steps in a sandbox** before it costs any
+training compute. Rewards that crash, return constants or emit NaN are rejected.
+
+### Daytona — ephemeral training sandboxes
+One sandbox per reward variant, 32 vectorised environments inside each, deleted
+the moment the run finishes. Isolation matters twice over: four rewards must be
+compared under identical conditions, and LLM-written code should execute
+somewhere it cannot touch anything else. CPU only — no GPU anywhere in this
+project.
+
+### Built with
+- **Grok / Grokbot** — fast teammate for ideation, design and triage: second
+  opinion on reward-function logic and on diagnosing why a training run had
+  collapsed, plus connective tissue across codespaces and resources.
+- **Cursor** — multi-file refactors across the agent pipeline, keeping the
+  schema, tool contracts and call sites in sync as the contract moved.
+- Next.js 16 · React 19 · Three.js / react-three-fiber · Mastra (agent
+  orchestration) · Drizzle ORM · PyTorch · stable-baselines3 · CLIP ViT-B/32 +
+  scikit-learn logistic probe.
+
+---
+
+## Reproducibility
+
+Everything below was measured on real services, not mocked. The repo contains no
+credentials; `.env.example` documents all 35 variables with secrets left blank.
+
+### 1. Prerequisites
+- Node 20+, Python 3.11+
+- Accounts: Neon, Tiger Data (TimescaleDB), Bright Data, Vultr, Daytona
+
+### 2. Configure
 ```bash
-# 1. deps
+cp .env.example .env.local
+# fill in every value marked "# SECRET"
+```
+
+### 3. Install
+```bash
+npm install
 cd apps/web && npm install
-
-# 2. schema (already applied to the live project)
-node scripts/../../../scripts/...   # see db/migrations/0001_init.sql, 0002, tiger_0001
-
-# 3. base policy — every mission fine-tunes from this
-node apps/web/scripts/pretrain_base.mjs       # 500k steps, ~70s in a sandbox
-
-# 4. dev server
-cd apps/web && npx next dev
-
-# 5. a mission
-curl -XPOST localhost:3000/api/missions -H 'content-type: application/json' \
-  -d '{"goal_text":"Pull pigweed out of my strawberry beds without touching the strawberries"}'
-curl -XPOST localhost:3000/api/missions/<id>/run -d '{}'
-open http://localhost:3000/m/<id>
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r trainer/requirements.txt
 ```
 
-### Surviving a restart, and forking a mission
-
-The workflow runs inside the Next.js server process, so a rebuild or a crash
-used to kill every in-flight mission silently — the row kept saying `training`
-forever. Progress is now reconstructed from Postgres (the mission row,
-`agent_events`, and the per-stage output tables), and a mission can be picked
-back up at the first stage whose durable product is missing:
-
+### 4. Migrate
 ```bash
-# what survived, and where a resume would start (read-only)
-curl localhost:3000/api/missions/<id>/resume
+# Neon (agent backend)
+psql "$DATABASE_URL_UNPOOLED" -f db/migrations/0001_init.sql
+psql "$DATABASE_URL_UNPOOLED" -f db/migrations/0002_telemetry_inbox.sql
+psql "$DATABASE_URL_UNPOOLED" -f db/migrations/0003_region_provenance.sql
+psql "$DATABASE_URL_UNPOOLED" -f db/migrations/0004_resume_and_forks.sql
 
-# continue — reuses scraped sources and facts, curated images, the fitted
-# perception model, written reward specs, completed runs and recorded evals
-curl -XPOST localhost:3000/api/missions/<id>/resume -d '{}'
-curl -XPOST localhost:3000/api/missions/<id>/resume \
-  -d '{"from":"generation","overrides":{"budget":{"steps_per_run":100000}}}'
+# Tiger (telemetry) — requires timescaledb + timescaledb_toolkit
+for f in db/migrations/tiger_*.sql; do psql "$TIGER_DATABASE_URL" -f "$f"; done
 ```
 
-GET `/api/missions` reports a working-state mission as `stalled` when neither an
-`agent_event` nor `missions.heartbeat_at` (written every 20s by the live stage
-runner) has been seen for 10 minutes.
-
-"Fork this mission" answers *what if I told it to be more cautious?* with a real
-Neon branch of the database at that mission's state — every source, fact,
-curated image, perception model and artifact comes along copy-on-write, so
-nothing is re-scraped — and re-runs the chosen stage inside the branch with
-different parameters:
-
+### 5. Train the base policy the demo improves on
 ```bash
-curl -XPOST localhost:3000/api/missions/<id>/fork -H 'content-type: application/json' \
-  -d '{"from_stage":"design","overrides":{"priorities":{"avoid_damage":1.0},
-        "budget":{"variants":1,"generations":1}},"label":"more cautious"}'
-curl 'localhost:3000/api/missions/<id>/compare?fork_id=fork_…'
-curl -XDELETE 'localhost:3000/api/missions/<id>/fork?fork_id=fork_…'
+node apps/web/scripts/pretrain_base.mjs     # registers rover-base-v1
 ```
 
-Branching needs the Neon control plane: set `NEON_API_KEY` in `.env.local`
-(`neon api-keys create --name furrow`), or stay logged in with the `neon` CLI —
-without a key the client falls back to the CLI's authenticated passthrough.
+### 6. Run
+```bash
+cd apps/web && npm run build && npm start   # http://localhost:3200
+```
+Open `/`, type a goal, press **Teach it**. Watch `/observatory`.
 
-### Cost discipline
+> **Note:** build into a separate directory if a mission is in flight —
+> `next build` replaces `.next` underneath a running `next start` and will kill
+> live runs. Use `NEXT_DIST_DIR=.next-new npm run build`.
 
-Sandboxes are created once per mission, reused across generations, auto-stop
-after 15 idle minutes and are deleted when the mission ends.
-`node apps/web/scripts/daytona_cleanup.mjs --delete` removes any stragglers.
-Fork branches cost Neon storage: `node apps/web/scripts/neon_branches.mjs` lists
-every branch with size, age and whether Furrow created it, and only deletes with
-`--delete`. `main` and `demo-golden` are excluded by name AND by id, so that
-script cannot delete them whatever it is passed.
-Bright Data responses are cached by URL hash and capped per mission
-(`BRIGHTDATA_MAX_REQUESTS_PER_MISSION`). Vision QA downscales to 320 px first.
-`tiger service delete ka4c7529hx` when the event is over.
+### Verifying the claims yourself
+| Claim | Command |
+|---|---|
+| Perception gain is real, not fitting noise | `node apps/web/scripts/perception_ablation.mjs` |
+| The policy actually learns | `node apps/web/scripts/learning_proof.mjs` |
+| Telemetry is not double-counted | `node apps/web/scripts/drain_backfill.mjs` |
+| Neon branches are isolated | `node apps/web/scripts/neon_branches.mjs` |
+| Sandboxes are cleaned up | `node apps/web/scripts/daytona_cleanup.mjs` |
+| Orphaned runs reaped safely (dry-run default) | `node apps/web/scripts/reap_orphan_runs.mjs` |
+
+Determinism: FieldGym is seeded per environment, so the same seed yields the
+same field. Baseline and candidate always share the seed set and the perception
+model — that is what makes the before/after table a fair comparison rather than
+a flattering one.
+
+---
+
+## Known limitations
+
+- Crop damage (73.5%) is improved but not production-ready.
+- Results are measured **in simulation**, grounded on scraped data. No
+  hardware-in-the-loop evaluation yet.
+- Three generations of four variants is a small search; the reward-search loop
+  has the most headroom of anything here.
+- Some environment parameters are `assumed` rather than `cited` when the web had
+  no figure. The UI labels which is which.
+
+## Layout
+
+```
+apps/web/          Next.js console, agents (Mastra), API routes, 3D arena
+apps/web/scripts/  verification + maintenance scripts
+trainer/           PPO, FieldGym env, perception, telemetry clients
+db/migrations/     Neon + Tiger schemas
+scripts/           base-policy pretraining
+```
+
+## License
+
+No license granted yet — all rights reserved pending a decision. Open an issue
+if you want to use this.
