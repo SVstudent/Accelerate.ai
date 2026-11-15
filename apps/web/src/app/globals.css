@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+/**
+ * Furrow · "Field operations console" (DESIGN.md §1).
+ * Dark, earthy base. Colour carries meaning and is never decorative:
+ * green = crop/protect · magenta = weed/target · amber = agent activity
+ * red = damage · sky = baseline policy.
+ */
+@theme {
+  --color-soil-950: #12100c;
+  --color-soil-900: #1b1813;
+  --color-soil-800: #26221b;
+  --color-soil-700: #3a3428;
+  --color-chaff-200: #e9e2d0;
+  --color-chaff-400: #b3aa94;
+  --color-chaff-600: #7d7563;
+  --color-leaf-400: #6bcb77;
+  --color-bloom-400: #e05bb5;
+  --color-signal-400: #f2b33d;
+  --color-blight-500: #e5484d;
+  --color-sky-400: #5fb3d9;
+
+  --radius-card: 6px;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: var(--color-soil-950);
+  color: var(--color-chaff-200);
+  font-size: 14px;
+}
+
+/* Numbers are monospaced with tabular figures — judges read them from a step back. */
+.num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(28px, 3.4vw, 56px);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.panel {
+  background: var(--color-soil-900);
+  border: 1px solid var(--color-soil-700);
+  border-radius: var(--radius-card);
+}
+
+.chip {
+  border-radius: 999px;
+  border: 1px solid var(--color-soil-700);
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* Live pulse (DESIGN.md §3.1): 1.2s breathing dot. */
+@keyframes furrow-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+.pulse-live { animation: furrow-pulse 1.2s ease-in-out infinite; }
+
+/* Trace rows slide down 8px and fade in over 150ms (DESIGN.md §3.4). */
+@keyframes furrow-row-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.row-in { animation: furrow-row-in 150ms cubic-bezier(.2,.8,.2,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-live, .row-in { animation: none !important; }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--color-soil-700); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }

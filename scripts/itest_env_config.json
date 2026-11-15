@@ -1,0 +1,17 @@
+{
+  "obs_version": 1,
+  "field": {
+    "length_m": 12, "rows": 3,
+    "row_spacing_m": { "value": 0.30, "assumed": true },
+    "in_row_spacing_m": { "value": 0.30, "assumed": true },
+    "crop_radius_m": { "value": 0.12, "assumed": true },
+    "root_zone_radius_m": { "value": 0.08, "assumed": true },
+    "weed_density_per_m2": { "value": [2, 6], "assumed": true },
+    "weed_radius_m": { "value": [0.02, 0.06], "assumed": true }
+  },
+  "rover": { "max_speed_mps": 0.6, "max_turn_rps": 1.2, "body_radius_m": 0.05, "reach_m": 0.18 },
+  "perception": { "mode": "uninformative" },
+  "episode_steps": 400,
+  "dt": 0.1,
+  "randomize": { "spacing_jitter": 0.15, "missing_crop_prob": 0.05 }
+}
