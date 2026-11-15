@@ -148,15 +148,33 @@ compared under identical conditions, and LLM-written code should execute
 somewhere it cannot touch anything else. CPU only — no GPU anywhere in this
 project.
 
+### Mastra — agent orchestration
+The seven agents are not a hand-rolled promise chain. Each stage is a Mastra
+`createStep`, composed into a `createWorkflow` (`src/mastra/workflows/mission.ts`),
+which is what makes the pipeline inspectable and resumable rather than a script
+that either finishes or doesn't.
+
+- **Workflow state lives in Neon**, not in memory: `PostgresStore` is mounted on
+  the same `DATABASE_URL` under a dedicated `mastra` schema, so agent memory and
+  workflow snapshots sit in the same database as the mission rows they describe.
+  One connection string, one backup, one place to look when a run misbehaves.
+- That co-location is why **a mission survives the server restarting** — the
+  workflow can be picked up from its last completed step instead of re-scraping
+  the web and re-training from zero.
+- The repo layout follows the framework: `src/mastra/agents/` (Foreman, Scout,
+  Curator, Architect, Judge), `src/mastra/tools/` (Bright Data, Daytona, Neon,
+  Tiger, LLM clients), `src/mastra/workflows/` (the mission + stage runners),
+  `src/mastra/prompts/`.
+- Packages: `@mastra/core` 1.83, `@mastra/pg` 1.36, `@mastra/mcp` 2.9.
+
 ### Built with
 - **Grok / Grokbot** — fast teammate for ideation, design and triage: second
   opinion on reward-function logic and on diagnosing why a training run had
   collapsed, plus connective tissue across codespaces and resources.
 - **Cursor** — multi-file refactors across the agent pipeline, keeping the
   schema, tool contracts and call sites in sync as the contract moved.
-- Next.js 16 · React 19 · Three.js / react-three-fiber · Mastra (agent
-  orchestration) · Drizzle ORM · PyTorch · stable-baselines3 · CLIP ViT-B/32 +
-  scikit-learn logistic probe.
+- Next.js 16 · React 19 · Three.js / react-three-fiber · Drizzle ORM · PyTorch ·
+  stable-baselines3 · CLIP ViT-B/32 + scikit-learn logistic probe.
 
 ---
 
